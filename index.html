@@ -107,6 +107,13 @@
 padding:8px 10px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.4);font:12px/1.4 system-ui,Segoe UI,sans-serif;
 max-height:80vh;overflow:auto">
 <b style="font-size:14px">Nigeria Digital Access Atlas</b>
+<div style="margin:6px 0 4px 0;position:relative">
+  <input id="lga-search" type="search" placeholder="Search LGA (e.g. Ningi, Kano Municipal)…"
+    style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font:12px system-ui;outline:none"
+    autocomplete="off">
+  <div id="lga-suggest" style="display:none;position:absolute;left:0;right:0;top:100%;max-height:220px;overflow:auto;background:#fff;border:1px solid #ccc;border-top:none;border-radius:0 0 4px 4px;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,.15)"></div>
+</div>
+<div id="lga-search-status" style="font-size:11px;color:#666;min-height:14px;margin-bottom:2px"></div>
 Speed-test data covers 8% of people. 560 of 774 LGAs are
 'Unmeasured, dark'; 167 LGAs form the Tier-1 core (39.8M exposed people).
 <details open><summary><b>Legend</b> (LGA counts)</summary><div style="margin-top:4px">
@@ -459,5 +466,169 @@ boundaries, GRID3 facilities; HV lines: Nigeria SE4ALL portal.</details></div>
             ).addTo(map_a8c8c96159513ef3a5ad8a100a58f70b);
 
         
+
+
+/* ========== LGA Search ========== */
+(function() {
+  const map = map_a8c8c96159513ef3a5ad8a100a58f70b;
+  // Prefer the currently active base layer; fall back to typology layer
+  const layers = [
+    geo_json_63f7704277cf3f9587f34398edd7e16c,
+    geo_json_02fd2886c388ce3d3df80aef22065839,
+    geo_json_d7365a57cc5997cd805954f2e5db5568
+  ];
+
+  // Build a flat list of {name, state, layer, feature, bounds}
+  const index = [];
+  layers.forEach(layer => {
+    layer.eachLayer(function(lyr) {
+      if (!lyr.feature || !lyr.feature.properties) return;
+      const p = lyr.feature.properties;
+      const name = (p.lga || "").trim();
+      if (!name) return;
+      index.push({
+        name: name,
+        state: (p.state || "").trim(),
+        label: name + (p.state ? " (" + p.state + ")" : ""),
+        layer: layer,
+        featureLayer: lyr,
+        bounds: lyr.getBounds ? lyr.getBounds() : null
+      });
+    });
+  });
+
+  // Deduplicate by name+state (keep first occurrence = typology layer)
+  const seen = new Set();
+  const unique = [];
+  index.forEach(item => {
+    const key = item.name.toLowerCase() + "|" + item.state.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(item);
+    }
+  });
+
+  const input = document.getElementById("lga-search");
+  const suggest = document.getElementById("lga-suggest");
+  const status = document.getElementById("lga-search-status");
+  let highlightLayer = null;
+  let activeIdx = -1;
+
+  function clearHighlight() {
+    if (highlightLayer) {
+      map.removeLayer(highlightLayer);
+      highlightLayer = null;
+    }
+  }
+
+  function highlight(item) {
+    clearHighlight();
+    if (!item || !item.bounds || !item.bounds.isValid()) {
+      status.textContent = "Could not locate geometry.";
+      return;
+    }
+    // Fit bounds with a little padding
+    map.fitBounds(item.bounds, { padding: [40, 40], maxZoom: 11 });
+
+    // Draw a bright outline on top
+    highlightLayer = L.geoJSON(item.featureLayer.feature, {
+      style: {
+        color: "#ff00aa",
+        weight: 4,
+        opacity: 1,
+        fillColor: "#ff00aa",
+        fillOpacity: 0.25
+      },
+      interactive: false
+    }).addTo(map);
+
+    status.innerHTML = "<b>" + item.name + "</b>" +
+      (item.state ? ", " + item.state : "") +
+      " — highlighted";
+    suggest.style.display = "none";
+    input.blur();
+  }
+
+  function filter(q) {
+    q = (q || "").trim().toLowerCase();
+    if (!q) return [];
+    return unique.filter(item =>
+      item.name.toLowerCase().includes(q) ||
+      item.state.toLowerCase().includes(q) ||
+      item.label.toLowerCase().includes(q)
+    ).slice(0, 12);
+  }
+
+  function renderSuggestions(list) {
+    suggest.innerHTML = "";
+    activeIdx = -1;
+    if (!list.length) {
+      suggest.style.display = "none";
+      return;
+    }
+    list.forEach((item, i) => {
+      const div = document.createElement("div");
+      div.style.cssText = "padding:6px 8px;cursor:pointer;border-bottom:1px solid #eee;font-size:12px";
+      div.innerHTML = "<b>" + item.name + "</b>" +
+        (item.state ? " <span style='color:#666'>(" + item.state + ")</span>" : "");
+      div.addEventListener("mouseenter", () => {
+        activeIdx = i;
+        Array.from(suggest.children).forEach((c, j) =>
+          c.style.background = j === i ? "#e8f0fe" : "#fff");
+      });
+      div.addEventListener("click", () => highlight(item));
+      suggest.appendChild(div);
+    });
+    suggest.style.display = "block";
+  }
+
+  input.addEventListener("input", function() {
+    const list = filter(this.value);
+    renderSuggestions(list);
+    if (!this.value.trim()) {
+      clearHighlight();
+      status.textContent = "";
+    }
+  });
+
+  input.addEventListener("keydown", function(e) {
+    const items = suggest.children;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIdx = Math.min(activeIdx + 1, items.length - 1);
+      Array.from(items).forEach((c, j) =>
+        c.style.background = j === activeIdx ? "#e8f0fe" : "#fff");
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIdx = Math.max(activeIdx - 1, 0);
+      Array.from(items).forEach((c, j) =>
+        c.style.background = j === activeIdx ? "#e8f0fe" : "#fff");
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const list = filter(this.value);
+      if (activeIdx >= 0 && list[activeIdx]) {
+        highlight(list[activeIdx]);
+      } else if (list.length === 1) {
+        highlight(list[0]);
+      } else if (list.length > 1) {
+        status.textContent = list.length + " matches — pick one from the list";
+      } else {
+        status.textContent = "No LGA matched \"" + this.value + "\"";
+      }
+    } else if (e.key === "Escape") {
+      suggest.style.display = "none";
+      clearHighlight();
+      status.textContent = "";
+    }
+  });
+
+  // Close suggestions when clicking outside
+  document.addEventListener("click", function(e) {
+    if (!input.contains(e.target) && !suggest.contains(e.target)) {
+      suggest.style.display = "none";
+    }
+  });
+})();
+
 </script>
 </html>
